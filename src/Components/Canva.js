@@ -1,229 +1,239 @@
-import { useRef, useState } from "react";
-import { toast } from 'react-hot-toast';
-import { Stage, Layer, Rect, Circle, Line } from "react-konva";
+import React, { useRef, useState, useEffect } from "react";
+import { Toaster, toast } from 'react-hot-toast';
+import { distanceFromLineSegment } from "./helper";
 
-const shapeDefaults = {
-  fill: "transparent",
-  stroke: "black",
-  strokeWidth: 2,
-  dash: [],
-};
-
-export default function DrawingApp() {
+export default function ShapeDrawingApp() {
+  const canvasRef = useRef(null);
   const [shapes, setShapes] = useState([]);
-  const [tool, setTool] = useState("select");
+  const [tool, setTool] = useState("rect");
+  const [startPoint, setStartPoint] = useState(null);
   const [selectedId, setSelectedId] = useState(null);
-  const [newRect, setNewRect] = useState(null);
-  const [newCircle, setNewCircle] = useState(null);
-  const [newLine, setNewLine] = useState(null);
-  const [newPencilLine, setNewPencilLine] = useState(null);
-  const stageRef = useRef();
+  const [mode, setMode] = useState(null);
+  const [offset, setOffset] = useState({ x: 0, y: 0 });
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    const ctx = canvas.getContext("2d");
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    shapes.forEach((shape) => {
+      ctx.beginPath();
+      ctx.lineWidth = shape.strokeWidth || 2;
+      ctx.strokeStyle =
+        shape.id === selectedId ? "red" : shape.stroke || "black";
+      ctx.fillStyle = shape.fill || "transparent";
+      if (shape.dash) {
+        ctx.setLineDash(shape.dash);
+      } else {
+        ctx.setLineDash([]);
+      }
+
+      if (shape.type === "rect") {
+        ctx.rect(shape.x, shape.y, shape.width, shape.height);
+        ctx.fill();
+        ctx.stroke();
+      } else if (shape.type === "circle") {
+        ctx.arc(shape.x, shape.y, shape.radius, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+      } else if (shape.type === "line") {
+        const [x1, y1, x2, y2] = shape.points;
+        ctx.moveTo(x1, y1);
+        ctx.lineTo(x2, y2);
+        ctx.stroke();
+      } else if (shape.type === "pencil") {
+        const pts = shape.points;
+        ctx.moveTo(pts[0], pts[1]);
+        for (let i = 2; i < pts.length; i += 2) {
+          ctx.lineTo(pts[i], pts[i + 1]);
+        }
+        ctx.stroke();
+      }
+    });
+  }, [shapes, selectedId]);
+
+  const getMouse = (e) => {
+    const rect = canvasRef.current.getBoundingClientRect();
+    return {
+      x: e.clientX - rect.left,
+      y: e.clientY - rect.top,
+    };
+  };
 
   const handleMouseDown = (e) => {
-    const stage = stageRef.current.getStage();
-    const { x, y } = stage.getPointerPosition();
-    const id = shapes.length + 1;
+    const { x, y } = getMouse(e);
+    const hit = shapes.find((s) => {
+      if (s.type === "rect") {
+        return (
+          x >= s.x && x <= s.x + s.width && y >= s.y && y <= s.y + s.height
+        );
+      } else if (s.type === "circle") {
+        return Math.sqrt((x - s.x) ** 2 + (y - s.y) ** 2) <= s.radius;
+      } else if (s.type === "line") {
+        const [x1, y1, x2, y2] = s.points;
+        return distanceFromLineSegment(x, y, x1, y1, x2, y2) <= 5;
+      } else if (s.type === "pencil") {
+        const pts = s.points;
+        for (let i = 0; i < pts.length - 2; i += 2) {
+          if (
+            distanceFromLineSegment(
+              x,
+              y,
+              pts[i],
+              pts[i + 1],
+              pts[i + 2],
+              pts[i + 3]
+            ) <= 5
+          ) {
+            return true;
+          }
+        }
+      }
+      return false;
+    });
 
-    if (e.target === stage) {
+    if (tool === "eraser" && hit) {
+      setShapes((prev) => prev.filter((s) => s.id !== hit.id));
       setSelectedId(null);
+      return;
     }
 
-    if (tool === "rect") {
-      setNewRect({
+    if (hit) {
+      setSelectedId(hit.id);
+      if (tool === "select") {
+        setMode("move");
+        if (hit.type === "line" || hit.type === "pencil") {
+          setOffset({ x, y });
+        } else {
+          setOffset({ x: x - hit.x, y: y - hit.y });
+        }
+      }
+    } else {
+      const id = Date.now();
+      const base = {
         id,
-        type: "rect",
-        x,
-        y,
-        width: 0,
-        height: 0,
-        ...shapeDefaults,
-      });
-    } else if (tool === "circle") {
-      setNewCircle({ id, type: "circle", x, y, radius: 0, ...shapeDefaults });
-    } else if (tool === "line") {
-      setNewLine({ id, type: "line", points: [x, y, x, y], ...shapeDefaults });
-    } else if (tool === "pencil") {
-      setNewPencilLine({
-        id,
-        type: "pencil",
-        points: [x, y],
-        ...shapeDefaults,
-      });
+        stroke: "black",
+        fill: "transparent",
+        strokeWidth: 2,
+        dash: [],
+      };
+
+      if (tool === "rect") {
+        setShapes([
+          ...shapes,
+          { ...base, type: "rect", x, y, width: 0, height: 0 },
+        ]);
+      } else if (tool === "circle") {
+        setShapes([...shapes, { ...base, type: "circle", x, y, radius: 0 }]);
+      } else if (tool === "line") {
+        setShapes([...shapes, { ...base, type: "line", points: [x, y, x, y] }]);
+      } else if (tool === "pencil") {
+        setShapes([...shapes, { ...base, type: "pencil", points: [x, y] }]);
+      }
+      setSelectedId(id);
+      setStartPoint({ x, y });
+      setMode("draw");
     }
   };
 
   const handleMouseMove = (e) => {
-    const stage = stageRef.current.getStage();
-    const { x, y } = stage.getPointerPosition();
-
-    if (newRect) {
-      const width = x - newRect.x;
-      const height = y - newRect.y;
-      setNewRect({ ...newRect, width, height });
-    } else if (newCircle) {
-      const dx = x - newCircle.x;
-      const dy = y - newCircle.y;
-      const radius = Math.sqrt(dx * dx + dy * dy);
-      setNewCircle({ ...newCircle, radius });
-    } else if (newLine) {
-      const points = [...newLine.points.slice(0, 2), x, y];
-      setNewLine({ ...newLine, points });
-    } else if (newPencilLine) {
-      setNewPencilLine({
-        ...newPencilLine,
-        points: [...newPencilLine.points, x, y],
-      });
-    }
-  };
-
-  const handleMouseUp = () => {
-    if (newRect) {
-      setShapes((prev) => [...prev, newRect]);
-      setNewRect(null);
-      setTool("select");
-    }
-    if (newCircle) {
-      setShapes((prev) => [...prev, newCircle]);
-      setNewCircle(null);
-      setTool("select");
-    }
-    if (newLine) {
-      setShapes((prev) => [...prev, newLine]);
-      setNewLine(null);
-      setTool("select");
-    }
-    if (newPencilLine) {
-      setShapes((prev) => [...prev, newPencilLine]);
-      setNewPencilLine(null);
-      setTool("select");
-    }
-  };
-
-  const handleDrag = (index, e) => {
-    const updated = [...shapes];
-    const shape = updated[index];
-
-    if (shape.type === "pencil") {
-      const shapeNode = e.target;
-      const dx = shapeNode.x();
-      const dy = shapeNode.y();
-
-      const newPoints = shape.points.map((point, i) =>
-        i % 2 === 0 ? point + dx : point + dy
-      );
-
-      updated[index] = {
-        ...shape,
-        points: newPoints,
-        x: 0,
-        y: 0,
-      };
-
-      shapeNode.position({ x: 0, y: 0 });
-    } else if (shape.type === "line") {
-      const dx = e.target.x() - (shape.x || 0);
-      const dy = e.target.y() - (shape.y || 0);
-
-      const newPoints = shape.points.map((point, i) =>
-        i % 2 === 0 ? point + dx : point + dy
-      );
-
-      updated[index] = {
-        ...shape,
-        points: newPoints,
-        x: 0,
-        y: 0,
-      };
-
-      e.target.position({ x: 0, y: 0 });
-    } else {
-      updated[index] = {
-        ...shape,
-        x: e.target.x(),
-        y: e.target.y(),
-      };
-    }
-
+    if (!mode) return;
+    const { x, y } = getMouse(e);
+    const updated = shapes.map((shape) => {
+      if (shape.id !== selectedId) return shape;
+      if (mode === "draw") {
+        if (shape.type === "rect") {
+          return { ...shape, width: x - shape.x, height: y - shape.y };
+        } else if (shape.type === "circle") {
+          const dx = x - shape.x;
+          const dy = y - shape.y;
+          return { ...shape, radius: Math.sqrt(dx * dx + dy * dy) };
+        } else if (shape.type === "line") {
+          const [x1, y1] = shape.points;
+          return { ...shape, points: [x1, y1, x, y] };
+        } else if (shape.type === "pencil") {
+          return { ...shape, points: [...shape.points, x, y] };
+        }
+      } else if (mode === "move" && tool === "select") {
+        if (shape.type === "rect" || shape.type === "circle") {
+          return { ...shape, x: x - offset.x, y: y - offset.y };
+        }
+        if (shape.type === "line") {
+          const [x1, y1, x2, y2] = shape.points;
+          const dx = x - offset.x;
+          const dy = y - offset.y;
+          setOffset({ x, y });
+          return {
+            ...shape,
+            points: [x1 + dx, y1 + dy, x2 + dx, y2 + dy],
+          };
+        }
+        if (shape.type === "pencil") {
+          const dx = x - offset.x;
+          const dy = y - offset.y;
+          setOffset({ x, y });
+          const newPoints = shape.points.map((val, idx) =>
+            idx % 2 === 0 ? val + dx : val + dy
+          );
+          return { ...shape, points: newPoints };
+        }
+      }
+      return shape;
+    });
     setShapes(updated);
   };
 
-  const updateStyle = (property, value) => {
+  const handleMouseUp = () => {
+    setStartPoint(null);
+    setMode(null);
+  };
+
+  const tools = [
+    { name: "select", icon: "🖱" },
+    { name: "rect", icon: "▭" },
+    { name: "circle", icon: "⭕" },
+    { name: "line", icon: "📏" },
+    { name: "pencil", icon: "✏️" },
+    { name: "eraser", icon: "🧽" },
+  ];
+
+  const updateStyle = (prop, value) => {
     if (selectedId === null) return;
-    setShapes(
-      shapes.map((shape) =>
-        shape.id === selectedId ? { ...shape, [property]: value } : shape
-      )
+    setShapes((prev) =>
+      prev.map((s) => (s.id === selectedId ? { ...s, [prop]: value } : s))
     );
   };
 
-  const saveDrawing = () => {
-    const json = JSON.stringify(shapes);
-    localStorage.setItem("drawing", json);
-    // alert("Drawing saved to localStorage!");
-    toast.success('Drawing saved!');
+    const saveDrawing = () => {
+    localStorage.setItem("drawing", JSON.stringify(shapes));
+    toast.success("Drawing saved!");
   };
 
   const loadDrawing = () => {
     const saved = localStorage.getItem("drawing");
-    if (saved) {
-      const parsedShapes = JSON.parse(saved);
-      setShapes(parsedShapes);
-      toast.success('Drawing loaded');
-    } else {
-      toast.success('No saved drawing found!');
-    }
+    if (saved) setShapes(JSON.parse(saved)), toast.success("Drawing loaded");
+    else toast.success("No saved drawing found!");
   };
 
-  const removeSelectedShape = () => {
-    if (selectedId === null) return;
-    setShapes(shapes.filter((shape) => shape.id !== selectedId));
-    setSelectedId(null);
-  };
 
   return (
-    <div className="min-h-screen bg-gray-100 p-6 font-sans flex">
-      <div className="w-72 bg-white shadow-md rounded-lg p-4 mr-6">
+    <div className="flex flex-row gap-4 p-4 min-h-screen bg-gray-100">
+      <div className="w-72 bg-white shadow-md rounded-lg p-4">
         <h2 className="text-lg font-semibold mb-4 text-indigo-700">🛠 Tools</h2>
         <div className="flex flex-col gap-2">
-          {[
-            { name: "select", icon: "🖱" },
-            { name: "rect", icon: "▭" },
-            { name: "circle", icon: "⭕" },
-            { name: "line", icon: "📏" },
-            { name: "pencil", icon: "✏️" },
-          ].map((toolItem) => (
+          {tools.map(({ name, icon }) => (
             <button
-              key={toolItem.name}
-              onClick={() => setTool(toolItem.name)}
-              className={`w-full px-4 py-2 rounded-md shadow-sm border text-left border-gray-300 transition-all duration-200 ease-in-out ${
-                tool === toolItem.name
+              key={name}
+              onClick={() => setTool(name)}
+              className={`w-full px-4 py-2 rounded-md shadow-sm border text-left border-gray-300 transition-all duration-200 ${
+                tool === name
                   ? "bg-teal-500 text-white"
-                  : "bg-white text-gray-800 hover:bg-gray-200 hover:text-black"
+                  : "bg-white text-gray-800 hover:bg-gray-200"
               }`}
             >
-              {toolItem.icon}{" "}
-              {toolItem.name.charAt(0).toUpperCase() + toolItem.name.slice(1)}
+              {icon} {name.charAt(0).toUpperCase() + name.slice(1)}
             </button>
           ))}
-          <button
-            onClick={saveDrawing}
-            className="w-full px-4 py-2 rounded-md bg-green-500 text-white hover:bg-green-600 transition shadow-sm"
-          >
-            💾 Save
-          </button>
-          <button
-            onClick={loadDrawing}
-            className="w-full px-4 py-2 rounded-md bg-blue-500 text-white hover:bg-blue-600 transition shadow-sm"
-          >
-            📂 Load
-          </button>
-
-          <button
-            onClick={removeSelectedShape}
-            className="w-full px-4 py-2 rounded-md bg-red-500 text-white hover:bg-red-600 transition shadow-sm"
-          >
-            🗑 Remove
-          </button>
         </div>
 
         <h2 className="text-lg font-semibold mt-6 mb-4 text-indigo-700">
@@ -250,10 +260,10 @@ export default function DrawingApp() {
               type="number"
               min="1"
               max="20"
+              className="w-20 px-2 py-1 border rounded"
               onChange={(e) =>
                 updateStyle("strokeWidth", parseInt(e.target.value))
               }
-              className="w-20 px-2 py-1 border rounded"
             />
           </label>
           <label className="flex items-center gap-2">
@@ -265,119 +275,31 @@ export default function DrawingApp() {
             />
             <span className="text-sm">Dashed Line</span>
           </label>
+          <button
+            onClick={saveDrawing}
+            className="w-full px-4 py-2 rounded-md bg-green-500 text-white hover:bg-green-600"
+          >
+            💾 Save
+          </button>
+          <button
+            onClick={loadDrawing}
+            className="w-full px-4 py-2 rounded-md bg-blue-500 text-white hover:bg-blue-600"
+          >
+            📂 Load
+          </button>
         </div>
       </div>
 
-      <div className="flex-1 flex justify-center items-start">
-        <Stage
-          ref={stageRef}
-          width={1000}
-          height={600}
-          className="bg-white border-4 border-gray-300 shadow-xl"
+      <div className="flex-grow">
+        <canvas
+          ref={canvasRef}
+          width={800}
+          height={500}
+          className={`bg-white border-4 border-gray-400 shadow-md ${tool}-cursor`}
           onMouseDown={handleMouseDown}
           onMouseMove={handleMouseMove}
           onMouseUp={handleMouseUp}
-          style={{
-            cursor:
-              tool === "select"
-                ? "grab"
-                : tool === "rect"
-                ? "crosshair"
-                : tool === "circle"
-                ? "circle"
-                : tool === "line"
-                ? "cell"
-                : tool === "pencil"
-                ? `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='black' viewBox='0 0 24 24'%3E%3Cpath d='M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04c.39-.39.39-1.02 0-1.41L18.37 3.29c-.39-.39-1.02-.39-1.41 0L15.13 5.12l4.24 4.24 1.34-1.32z'/%3E%3C/svg%3E") 0 24, auto`
-                : "default",
-          }}
-        >
-          <Layer>
-            {shapes.map((shape, i) => {
-              const isSelected = shape.id === selectedId;
-              const commonProps = {
-                key: shape.id,
-                draggable: isSelected,
-                onClick: () => setSelectedId(() => shape.id),
-                onDragEnd: (e) => handleDrag(i, e),
-                ...shape,
-              };
-
-              if (shape.type === "rect") {
-                return (
-                  <>
-                    <Rect {...commonProps} />
-                    {isSelected && (
-                      <Rect
-                        x={shape.x - 4}
-                        y={shape.y - 4}
-                        width={shape.width + 8}
-                        height={shape.height + 8}
-                        stroke="blue"
-                        dash={[4, 2]}
-                        strokeWidth={1.5}
-                        listening={false}
-                      />
-                    )}
-                  </>
-                );
-              }
-
-              if (shape.type === "circle") {
-                return (
-                  <>
-                    <Circle {...commonProps} />
-                    {isSelected && (
-                      <Circle
-                        x={shape.x}
-                        y={shape.y}
-                        radius={shape.radius + 4}
-                        stroke="blue"
-                        dash={[4, 2]}
-                        strokeWidth={1.5}
-                        listening={false}
-                      />
-                    )}
-                  </>
-                );
-              }
-
-              if (shape.type === "line" || shape.type === "pencil") {
-                return (
-                  <>
-                    <Line {...commonProps} />
-                    {isSelected && (
-                      <Line
-                        points={shape.points}
-                        stroke="blue"
-                        dash={[10, 5]}
-                        strokeWidth={shape.strokeWidth + 2}
-                        tension={shape.type === "pencil" ? 0.5 : 0}
-                        lineCap="round"
-                        lineJoin="round"
-                        listening={false}
-                      />
-                    )}
-                  </>
-                );
-              }
-
-              return null;
-            })}
-
-            {newRect && <Rect {...newRect} />}
-            {newCircle && <Circle {...newCircle} />}
-            {newLine && <Line {...newLine} />}
-            {newPencilLine && (
-              <Line
-                {...newPencilLine}
-                tension={0.5}
-                lineCap="round"
-                lineJoin="round"
-              />
-            )}
-          </Layer>
-        </Stage>
+        />
       </div>
     </div>
   );
